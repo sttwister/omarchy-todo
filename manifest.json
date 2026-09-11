@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "sttwister.todo",
+  "name": "Todo",
+  "version": "1.0.0",
+  "author": "sttwister",
+  "description": "A centered, keyboard-driven todo overlay for Omarchy",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Overlay.qml"
+  }
+}
