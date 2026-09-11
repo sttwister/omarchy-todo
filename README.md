@@ -18,7 +18,7 @@ something you go to the corner of the screen to find.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/<you>/omarchy-todo.git --enable --yes
+omarchy plugin add https://github.com/sttwister/omarchy-todo.git --enable --yes
 ```
 
 Then bind a key in `~/.config/hypr/bindings.lua`:
