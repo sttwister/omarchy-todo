@@ -56,7 +56,7 @@ Item {
     readonly property var borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
     readonly property string fontFamily: Style.font.menuFamily
 
-    readonly property int cardWidth: Math.min(Style.space(560), panel.width - Style.gapsOut * 2)
+    readonly property int cardWidth: Math.min(Style.space(720), panel.width - Style.gapsOut * 2)
     readonly property int rowHeight: Math.max(Style.space(34), Style.font.body + Style.spacing.controlPaddingY * 3)
     // Chrome is header + tabs + input + rules + footer; whatever is left of
     // the screen after that is how far the list may grow before it scrolls.
@@ -569,7 +569,10 @@ Item {
                         readonly property bool selected: root.selectedIndex === index
 
                         width: todoList.width
-                        height: root.rowHeight
+                        // Grows past the one-line rowHeight when the title
+                        // wraps, so a long task is readable instead of cut.
+                        height: Math.max(root.rowHeight,
+                            titleText.implicitHeight + Style.spacing.controlPaddingY * 3)
                         radius: Style.cornerRadius
                         color: selected ? root.selectedBackground
                             : (rowArea.containsMouse ? Style.hoverFillFor(root.foreground, root.accent, Color.urgent)
@@ -606,6 +609,7 @@ Item {
                         }
 
                         Text {
+                            id: titleText
                             anchors.left: checkbox.right
                             anchors.leftMargin: Style.spacing.controlGap
                             anchors.right: categoryTag.left
@@ -618,6 +622,10 @@ Item {
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.body
                             font.strikeout: row.completed
+                            // Wrap rather than truncate, but cap the growth so
+                            // one long task cannot swallow the whole list.
+                            wrapMode: Text.Wrap
+                            maximumLineCount: 2
                             elide: Text.ElideRight
                         }
 
