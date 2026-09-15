@@ -637,9 +637,11 @@ Item {
                             anchors.rightMargin: visible ? Style.spacing.sm : 0
                             anchors.verticalCenter: parent.verticalCenter
                             visible: root.activeCategory === Todos.ALL
-                            width: visible ? implicitWidth : 0
+                            // Blanking the text collapses the implicit width
+                            // on its own. Binding width back to implicitWidth
+                            // would make the binding depend on its own result.
                             textFormat: Text.PlainText
-                            text: row.category
+                            text: visible ? row.category : ""
                             color: root.foreground
                             opacity: row.completed ? 0.25 : 0.4
                             font.family: root.fontFamily
