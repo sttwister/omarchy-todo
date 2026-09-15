@@ -22,11 +22,24 @@ Item {
     property bool opened: false
     property int remaining: 0
 
-    // Row the keyboard acts on. -1 while the list is empty.
+    // Row the keyboard acts on, as an index into the *filtered* list.
+    // -1 while the current tab is empty.
     property int selectedIndex: 0
     // Row being renamed through the shared input, or -1 when the input is
-    // composing a new task.
+    // composing a new task. Also a filtered index.
     property int editingIndex: -1
+
+    // ---------------------------------------------------------- categories
+    //
+    // The whole list lives in `todos`; `todoModel` is the slice one tab
+    // shows. Every action takes a filtered index and maps it back through
+    // the row's sourceIndex, so the tab is purely a lens over one sequence.
+    property var todos: []
+    readonly property var tabList: Todos.tabs()
+    property string activeCategory: Todos.ALL
+    // Open-task count per tab, in tabList order. Recomputed by rebuild()
+    // because a binding over a function call would never re-evaluate.
+    property var tabCounts: []
 
     readonly property string stateDir: Quickshell.env("HOME") + "/.local/state/omarchy/settings"
     readonly property string todoPath: stateDir + "/sttwister.todo.json"
@@ -45,10 +58,10 @@ Item {
 
     readonly property int cardWidth: Math.min(Style.space(560), panel.width - Style.gapsOut * 2)
     readonly property int rowHeight: Math.max(Style.space(34), Style.font.body + Style.spacing.controlPaddingY * 3)
-    // Chrome is header + input + rules + footer; whatever is left of the
-    // screen after that is how far the list may grow before it scrolls.
+    // Chrome is header + tabs + input + rules + footer; whatever is left of
+    // the screen after that is how far the list may grow before it scrolls.
     readonly property int maxListHeight: Math.max(rowHeight * 3,
-        panel.height - Style.gapsOut * 2 - Style.space(210))
+        panel.height - Style.gapsOut * 2 - Style.space(260))
 
     // --------------------------------------------------------- monitor
     //
@@ -108,27 +121,30 @@ Item {
         id: todoModel
     }
 
-    function snapshot() {
-        var todos = []
-        for (var i = 0; i < todoModel.count; ++i) {
-            var item = todoModel.get(i)
-            todos.push({ title: item.title, completed: item.completed })
-        }
-        return todos
+    function loadTodos(raw) {
+        root.todos = Todos.parseTodos(raw)
+        root.rebuild()
     }
 
-    function loadTodos(raw) {
-        var todos = Todos.parseTodos(raw)
+    // Reproject `todos` through the active tab. Cheap enough to run on every
+    // mutation, which keeps the filtered model from needing its own edits.
+    function rebuild() {
+        var rows = Todos.viewTodos(root.todos, root.activeCategory)
         todoModel.clear()
-        for (var i = 0; i < todos.length; ++i)
-            todoModel.append(todos[i])
-        root.remaining = Todos.countRemaining(todos)
+        for (var i = 0; i < rows.length; ++i)
+            todoModel.append(rows[i])
+
+        var counts = []
+        for (var t = 0; t < root.tabList.length; ++t)
+            counts.push(Todos.countRemaining(root.todos, root.tabList[t]))
+        root.tabCounts = counts
+
+        root.remaining = Todos.countRemaining(root.todos, root.activeCategory)
         root.clampSelection()
     }
 
     function save() {
-        todoFile.setText(Todos.serializeTodos(root.snapshot()))
-        root.remaining = Todos.countRemaining(root.snapshot())
+        todoFile.setText(Todos.serializeTodos(root.todos))
     }
 
     function clampSelection() {
@@ -140,15 +156,52 @@ Item {
             root.selectedIndex = todoModel.count - 1
     }
 
+    // Filtered index of a row of the full list, or -1 when this tab hides it.
+    function viewIndexOf(sourceIndex) {
+        for (var i = 0; i < todoModel.count; ++i)
+            if (todoModel.get(i).sourceIndex === sourceIndex)
+                return i
+        return -1
+    }
+
+    function sourceIndexOf(viewIndex) {
+        if (viewIndex < 0 || viewIndex >= todoModel.count)
+            return -1
+        return todoModel.get(viewIndex).sourceIndex
+    }
+
+    // ----------------------------------------------------------- tabs
+
+    function setCategory(category) {
+        if (root.activeCategory === category)
+            return
+        root.cancelEdit()
+        root.activeCategory = category
+        root.selectedIndex = 0
+        root.rebuild()
+        todoList.positionViewAtBeginning()
+    }
+
+    function moveCategory(delta) {
+        root.setCategory(Todos.cycleCategory(root.activeCategory, delta))
+    }
+
     // ------------------------------------------------------------ actions
 
     function addTodo(text) {
         var title = Todos.trim(text)
         if (title === "")
             return false
-        todoModel.insert(0, { title: title, completed: false })
-        root.selectedIndex = 0
+        // On the All tab there is no tab to infer from, so a new task goes
+        // to the first category rather than nowhere.
+        var category = root.activeCategory === Todos.ALL ? Todos.defaultCategory()
+                                                         : root.activeCategory
+        var todos = root.todos.slice()
+        todos.unshift({ title: title, completed: false, category: category })
+        root.todos = todos
         root.save()
+        root.rebuild()
+        root.selectedIndex = root.viewIndexOf(0)
         return true
     }
 
@@ -161,24 +214,28 @@ Item {
             input.clear()
     }
 
-    function renameTodo(index, text) {
+    function renameTodo(viewIndex, text) {
         var title = Todos.trim(text)
+        var source = root.sourceIndexOf(viewIndex)
         root.editingIndex = -1
         input.clear()
-        if (index < 0 || index >= todoModel.count)
+        if (source < 0)
             return
-        if (title === "" || title === todoModel.get(index).title)
+        if (title === "" || title === root.todos[source].title)
             return
-        todoModel.setProperty(index, "title", title)
+        var todos = root.todos.slice()
+        todos[source] = { title: title, completed: todos[source].completed, category: todos[source].category }
+        root.todos = todos
         root.save()
+        root.rebuild()
     }
 
-    function startEdit(index) {
-        if (index < 0 || index >= todoModel.count)
+    function startEdit(viewIndex) {
+        if (viewIndex < 0 || viewIndex >= todoModel.count)
             return
-        root.selectedIndex = index
-        root.editingIndex = index
-        input.text = todoModel.get(index).title
+        root.selectedIndex = viewIndex
+        root.editingIndex = viewIndex
+        input.text = todoModel.get(viewIndex).title
         input.forceActiveFocus()
         input.selectAll()
     }
@@ -188,42 +245,58 @@ Item {
         input.clear()
     }
 
-    function toggleTodo(index) {
-        if (index < 0 || index >= todoModel.count)
+    function toggleTodo(viewIndex) {
+        var source = root.sourceIndexOf(viewIndex)
+        if (source < 0)
             return
-        var completed = !todoModel.get(index).completed
-        todoModel.setProperty(index, "completed", completed)
+        var todos = root.todos.slice()
+        var item = todos[source]
+        var completed = !item.completed
+        todos.splice(source, 1)
         // Completed rows sink, reopened rows float, order preserved within
         // each group — the same shape parseTodos() enforces on load.
-        var target = completed ? todoModel.count - 1 : 0
-        todoModel.move(index, target, 1)
-        root.selectedIndex = target
+        var target = completed ? todos.length : 0
+        todos.splice(target, 0, { title: item.title, completed: completed, category: item.category })
+        root.todos = todos
         root.save()
-    }
-
-    function removeTodo(index) {
-        if (index < 0 || index >= todoModel.count)
-            return
-        if (root.editingIndex === index)
-            root.cancelEdit()
-        todoModel.remove(index)
+        root.rebuild()
+        root.selectedIndex = root.viewIndexOf(target)
         root.clampSelection()
-        root.save()
     }
 
+    function removeTodo(viewIndex) {
+        var source = root.sourceIndexOf(viewIndex)
+        if (source < 0)
+            return
+        if (root.editingIndex === viewIndex)
+            root.cancelEdit()
+        var todos = root.todos.slice()
+        todos.splice(source, 1)
+        root.todos = todos
+        root.save()
+        root.rebuild()
+    }
+
+    // Scoped to the visible tab: on All this clears everything, on a
+    // category it leaves the other categories' history alone.
     function clearCompleted() {
+        var kept = []
         var removed = false
-        for (var i = todoModel.count - 1; i >= 0; --i) {
-            if (todoModel.get(i).completed) {
-                todoModel.remove(i)
+        for (var i = 0; i < root.todos.length; ++i) {
+            var item = root.todos[i]
+            var inTab = root.activeCategory === Todos.ALL || item.category === root.activeCategory
+            if (inTab && item.completed) {
                 removed = true
+                continue
             }
+            kept.push(item)
         }
         if (!removed)
             return
         root.cancelEdit()
-        root.clampSelection()
+        root.todos = kept
         root.save()
+        root.rebuild()
     }
 
     function moveSelection(delta) {
@@ -346,17 +419,76 @@ Item {
                     }
                 }
 
+                // --------------------------------------------------- tabs
+                //
+                // A Flow rather than a Row so a long category list wraps on
+                // a narrow card instead of running off the edge.
+                Flow {
+                    id: tabs
+                    width: parent.width
+                    spacing: Style.spacing.xs
+
+                    Repeater {
+                        model: root.tabList
+
+                        Rectangle {
+                            id: tab
+                            required property int index
+                            required property string modelData
+
+                            readonly property bool active: root.activeCategory === tab.modelData
+                            readonly property int openCount: index < root.tabCounts.length ? root.tabCounts[index] : 0
+
+                            width: tabLabel.implicitWidth + Style.spacing.rowPaddingX * 2
+                            height: Math.max(Style.space(26), tabLabel.implicitHeight + Style.spacing.controlPaddingY * 2)
+                            radius: Style.cornerRadius
+                            color: tab.active ? root.selectedBackground
+                                : (tabArea.containsMouse ? Style.hoverFillFor(root.foreground, root.accent, Color.urgent)
+                                                         : "transparent")
+
+                            Text {
+                                id: tabLabel
+                                anchors.centerIn: parent
+                                textFormat: Text.PlainText
+                                text: Todos.categoryLabel(tab.modelData)
+                                    + (tab.openCount > 0 ? "  " + tab.openCount : "")
+                                color: tab.active ? root.accent : root.foreground
+                                opacity: tab.active ? 1 : (tabArea.containsMouse ? 0.9 : 0.55)
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                font.bold: tab.active
+                            }
+
+                            MouseArea {
+                                id: tabArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    root.setCategory(tab.modelData)
+                                    input.forceActiveFocus()
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // -------------------------------------------------- input
                 TextField {
                     id: input
                     width: parent.width
-                    placeholderText: root.editingIndex >= 0 ? "Rename task…" : "Add a task…"
+                    placeholderText: root.editingIndex >= 0
+                        ? "Rename task…"
+                        : (root.activeCategory === Todos.ALL
+                            ? "Add a task to " + Todos.defaultCategory() + "…"
+                            : "Add a task to " + root.activeCategory + "…")
                     foreground: root.foreground
                     accent: root.accent
                     font.family: root.fontFamily
 
                     Keys.onPressed: function (event) {
                         var ctrl = (event.modifiers & Qt.ControlModifier) !== 0
+                        var shift = (event.modifiers & Qt.ShiftModifier) !== 0
 
                         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                             // An empty input means the keyboard is driving the
@@ -381,6 +513,21 @@ Item {
                         } else if (event.key === Qt.Key_Up) {
                             root.moveSelection(-1)
                             event.accepted = true
+                        } else if (event.key === Qt.Key_Backtab
+                                   || (event.key === Qt.Key_Tab && shift)) {
+                            root.moveCategory(-1)
+                            event.accepted = true
+                        } else if (event.key === Qt.Key_Tab) {
+                            root.moveCategory(1)
+                            event.accepted = true
+                        } else if (event.key === Qt.Key_Left || event.key === Qt.Key_Right) {
+                            // ←/→ switch tabs only when there is nothing to
+                            // put a cursor in; with text they stay ordinary
+                            // cursor keys so typos are still fixable.
+                            if (input.text === "") {
+                                root.moveCategory(event.key === Qt.Key_Right ? 1 : -1)
+                                event.accepted = true
+                            }
                         } else if (ctrl && event.key === Qt.Key_E) {
                             root.startEdit(root.selectedIndex)
                             event.accepted = true
@@ -417,6 +564,7 @@ Item {
                         required property int index
                         required property string title
                         required property bool completed
+                        required property string category
 
                         readonly property bool selected: root.selectedIndex === index
 
@@ -460,7 +608,7 @@ Item {
                         Text {
                             anchors.left: checkbox.right
                             anchors.leftMargin: Style.spacing.controlGap
-                            anchors.right: trash.left
+                            anchors.right: categoryTag.left
                             anchors.rightMargin: Style.spacing.md
                             anchors.verticalCenter: parent.verticalCenter
                             textFormat: Text.PlainText
@@ -471,6 +619,23 @@ Item {
                             font.pixelSize: Style.font.body
                             font.strikeout: row.completed
                             elide: Text.ElideRight
+                        }
+
+                        // Only All mixes categories, so only All needs to say
+                        // which one a row belongs to.
+                        Text {
+                            id: categoryTag
+                            anchors.right: trash.left
+                            anchors.rightMargin: visible ? Style.spacing.sm : 0
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: root.activeCategory === Todos.ALL
+                            width: visible ? implicitWidth : 0
+                            textFormat: Text.PlainText
+                            text: row.category
+                            color: root.foreground
+                            opacity: row.completed ? 0.25 : 0.4
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
                         }
 
                         Rectangle {
@@ -514,7 +679,9 @@ Item {
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                     textFormat: Text.PlainText
-                    text: "Nothing to do"
+                    text: root.activeCategory === Todos.ALL
+                        ? "Nothing to do"
+                        : "Nothing in " + root.activeCategory
                     color: root.foreground
                     opacity: 0.45
                     font.family: root.fontFamily
@@ -534,7 +701,7 @@ Item {
                         textFormat: Text.PlainText
                         text: root.editingIndex >= 0
                             ? "enter rename · esc cancel"
-                            : "enter add/tick · ↑↓ select · ^e edit · ^d delete · esc close"
+                            : "enter add/tick · ↑↓ select · ←→ category · ^e edit · ^d delete · esc close"
                         color: root.foreground
                         opacity: 0.45
                         font.family: root.fontFamily
